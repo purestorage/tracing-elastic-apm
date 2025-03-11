@@ -10,10 +10,11 @@ use tracing::{
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 use crate::{
-    apm_client::{ApmClient, Batch},
+    apm_client::Batch,
     config::Config,
     model::{Agent, Error, Log, Metadata, Service, Span, Transaction},
     visitor::{ApmVisitor, TraceIdVisitor},
+    ApmClient,
 };
 
 #[derive(Copy, Clone)]
@@ -29,15 +30,16 @@ struct SpanContext {
 }
 
 /// Telemetry capability that publishes events and spans to Elastic APM.
-pub struct ApmLayer {
-    client: ApmClient,
+pub struct ApmLayer<T> {
+    client: T,
     metadata: Value,
     timing_metadata_labels: bool,
 }
 
-impl<S> Layer<S> for ApmLayer
+impl<S, T> Layer<S> for ApmLayer<T>
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    T: crate::apm_client::Sender + 'static,
 {
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let now = SystemTime::now()
@@ -251,9 +253,48 @@ where
     }
 }
 
-impl ApmLayer {
+impl ApmLayer<ApmClient> {
     pub(crate) fn new(mut config: Config, service_name: String) -> AnyResult<Self> {
-        let metadata = Metadata {
+        let apm_address = config.apm_address.clone();
+        let authorization = config.authorization.take();
+        let allow_invalid_certs = config.allow_invalid_certs;
+        let root_cert_path = config.root_cert_path.take();
+
+        let metadata = Self::setup_metadata(config, service_name);
+
+        Ok(ApmLayer {
+            client: ApmClient::new(
+                apm_address,
+                authorization,
+                allow_invalid_certs,
+                root_cert_path,
+            )?,
+            metadata: json!(metadata),
+            timing_metadata_labels: false,
+        })
+    }
+}
+
+impl<T> ApmLayer<T>
+where
+    T: crate::apm_client::Sender,
+{
+    pub fn new_with(config: Config, service_name: String, sender: T) -> AnyResult<Self> {
+        let metadata = Self::setup_metadata(config, service_name);
+
+        Ok(ApmLayer {
+            client: sender,
+            metadata: json!(metadata),
+            timing_metadata_labels: false,
+        })
+    }
+
+    pub fn with_timing_metadata_labels(&mut self) {
+        self.timing_metadata_labels = true;
+    }
+
+    fn setup_metadata(mut config: Config, service_name: String) -> Metadata {
+        Metadata {
             service: Service {
                 name: service_name,
                 version: config
@@ -291,22 +332,7 @@ impl ApmLayer {
             user: config.user,
             cloud: config.cloud,
             labels: None,
-        };
-
-        Ok(ApmLayer {
-            client: ApmClient::new(
-                config.apm_address,
-                config.authorization,
-                config.allow_invalid_certs,
-                config.root_cert_path,
-            )?,
-            metadata: json!(metadata),
-            timing_metadata_labels: false,
-        })
-    }
-
-    pub fn with_timing_metadata_labels(&mut self) {
-        self.timing_metadata_labels = true;
+        }
     }
 
     fn create_metadata(
