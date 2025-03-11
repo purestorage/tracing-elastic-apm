@@ -581,7 +581,7 @@ pub enum Outcome {
 
 #[derive(Default, Serialize, Debug)]
 pub struct Transaction {
-    pub timestamp: Option<u64>,
+    pub timestamp: u64,
     pub name: Option<String>,
     #[serde(rename = "type")]
     pub transaction_type: String,
@@ -877,7 +877,7 @@ pub struct SpanContext {
 
 #[derive(Default, Serialize, Debug)]
 pub struct Span {
-    pub timestamp: Option<u64>,
+    pub timestamp: u64,
     #[serde(rename = "type")]
     pub span_type: String,
     pub subtype: Option<String>,
