@@ -15,10 +15,10 @@ use tokio::runtime::Runtime;
 use tracing::subscriber;
 use tracing::subscriber::NoSubscriber;
 
-use crate::config::Authorization;
+use crate::config::{self, Authorization};
 
 #[derive(Debug)]
-pub(crate) struct Batch {
+pub struct Batch {
     metadata: Value,
     transaction: Option<Value>,
     span: Option<Value>,
@@ -61,15 +61,27 @@ impl Batch {
     }
 }
 
-pub(crate) struct ApmClient {
+pub trait Sender {
+    fn new(
+        apm_address: String,
+        authorization: Option<config::Authorization>,
+        allow_invalid_certs: bool,
+        root_cert_path: Option<String>,
+    ) -> AnyResult<Self>
+    where
+        Self: Sized;
+    fn send_batch(&self, batch: Batch);
+}
+
+pub struct ApmClient {
     apm_address: Arc<String>,
     authorization: Option<Arc<String>>,
     client: Client,
     runtime: Runtime,
 }
 
-impl ApmClient {
-    pub fn new(
+impl Sender for ApmClient {
+    fn new(
         apm_address: String,
         authorization: Option<Authorization>,
         allow_invalid_certs: bool,
@@ -115,7 +127,7 @@ impl ApmClient {
         })
     }
 
-    pub fn send_batch(&self, batch: Batch) {
+    fn send_batch(&self, batch: Batch) {
         let client = self.client.clone();
         let apm_address = self.apm_address.clone();
         let authorization = self.authorization.clone();

@@ -12,7 +12,12 @@ pub mod layer;
 pub mod model;
 mod visitor;
 
+pub use apm_client::{ApmClient, Batch, Sender};
+
 /// Constructs a new telemetry layer for a given APM configuration.
-pub fn new_layer(service_name: String, config: Config) -> AnyResult<ApmLayer> {
+pub fn new_layer<T>(service_name: String, config: Config) -> AnyResult<ApmLayer<T>>
+where
+    T: apm_client::Sender,
+{
     ApmLayer::new(config, service_name)
 }

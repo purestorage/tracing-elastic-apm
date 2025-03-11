@@ -10,7 +10,7 @@ use tracing::{
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 use crate::{
-    apm_client::{ApmClient, Batch},
+    apm_client::Batch,
     config::Config,
     model::{Agent, Error, Log, Metadata, Service, Span, Transaction},
     visitor::{ApmVisitor, TraceIdVisitor},
@@ -29,15 +29,16 @@ struct SpanContext {
 }
 
 /// Telemetry capability that publishes events and spans to Elastic APM.
-pub struct ApmLayer {
-    client: ApmClient,
+pub struct ApmLayer<T> {
+    client: T,
     metadata: Value,
     timing_metadata_labels: bool,
 }
 
-impl<S> Layer<S> for ApmLayer
+impl<S, T> Layer<S> for ApmLayer<T>
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    T: crate::apm_client::Sender + 'static,
 {
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let now = SystemTime::now()
@@ -251,7 +252,10 @@ where
     }
 }
 
-impl ApmLayer {
+impl<T> ApmLayer<T>
+where
+    T: crate::apm_client::Sender,
+{
     pub(crate) fn new(mut config: Config, service_name: String) -> AnyResult<Self> {
         let metadata = Metadata {
             service: Service {
@@ -294,7 +298,7 @@ impl ApmLayer {
         };
 
         Ok(ApmLayer {
-            client: ApmClient::new(
+            client: T::new(
                 config.apm_address,
                 config.authorization,
                 config.allow_invalid_certs,
