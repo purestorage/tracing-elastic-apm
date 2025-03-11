@@ -22,14 +22,17 @@ struct TraceContext {
 }
 
 struct SpanContext {
-    pub duration: Duration,
-    pub last_timestamp: Instant,
+    pub idle: Duration,
+    pub busy: Duration,
+    pub instant: Instant,
+    pub first_entered_timestamp: Option<u64>,
 }
 
 /// Telemetry capability that publishes events and spans to Elastic APM.
 pub struct ApmLayer {
     client: ApmClient,
     metadata: Value,
+    timing_metadata_labels: bool,
 }
 
 impl<S> Layer<S> for ApmLayer
@@ -51,8 +54,10 @@ where
 
         extensions.insert(visitor);
         extensions.insert(SpanContext {
-            duration: Duration::new(0, 0),
-            last_timestamp: timestamp,
+            idle: Duration::new(0, 0),
+            busy: Duration::new(0, 0),
+            instant: timestamp,
+            first_entered_timestamp: None,
         });
 
         let name = span.name().to_string();
@@ -68,7 +73,7 @@ where
                 id: id.into_u64().to_string(),
                 trace_id: trace_ctx.trace_id.to_string(),
                 parent_id: parent_id.into_u64().to_string(),
-                timestamp: Some(now),
+                timestamp: now,
                 name,
                 span_type: "custom".to_string(),
                 ..Default::default()
@@ -88,7 +93,7 @@ where
                 id: id.into_u64().to_string(),
                 transaction_type: "custom".to_string(),
                 trace_id: trace_ctx.trace_id.to_string(),
-                timestamp: Some(now),
+                timestamp: now,
                 name: Some(name),
                 ..Default::default()
             };
@@ -151,7 +156,11 @@ where
                 ..Default::default()
             };
 
-            let metadata = self.create_metadata(&visitor, metadata);
+            let span_ctx = extensions
+                .get::<SpanContext>()
+                .expect("Span context not found!");
+
+            let metadata = self.create_metadata(&visitor, span_ctx, None, None, metadata);
             let batch = Batch::new(metadata, None, None, Some(json!(error)));
             self.client.send_batch(batch);
         }
@@ -165,11 +174,18 @@ where
             .get_mut::<SpanContext>()
             .expect("Span context not found!");
 
-        span_ctx.last_timestamp = Instant::now();
+        let instant = Instant::now();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+
+        span_ctx.idle += span_ctx.instant.elapsed();
+        span_ctx.instant = instant;
+        span_ctx.first_entered_timestamp.get_or_insert(timestamp);
     }
 
     fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
-        let timestamp = Instant::now();
         let span = ctx.span(id).expect("Span not found!");
         let mut extensions = span.extensions_mut();
 
@@ -177,7 +193,9 @@ where
             .get_mut::<SpanContext>()
             .expect("Span context not found!");
 
-        span_ctx.duration += timestamp.saturating_duration_since(span_ctx.last_timestamp);
+        let instant = Instant::now();
+        span_ctx.busy += span_ctx.instant.elapsed();
+        span_ctx.instant = instant;
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
@@ -190,14 +208,40 @@ where
             .remove::<SpanContext>()
             .expect("Span context not found!");
 
-        let metadata = self.create_metadata(&visitor, span.metadata());
-        let duration = span_ctx.duration.as_micros() as f32 / 1000.;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+
+        let span_metadata = span.metadata();
 
         let batch = if let Some(mut span) = extensions.remove::<Span>() {
-            span.duration = duration;
+            let metadata = self.create_metadata(
+                &visitor,
+                &span_ctx,
+                Some(span.timestamp),
+                span_ctx.first_entered_timestamp,
+                span_metadata,
+            );
+
+            let real_timestamp = span_ctx.first_entered_timestamp.unwrap_or(span.timestamp);
+            span.duration = (now - real_timestamp) as f32 / 1000.;
+            span.timestamp = real_timestamp;
             Batch::new(metadata, None, Some(json!(span)), None)
         } else if let Some(mut transaction) = extensions.remove::<Transaction>() {
-            transaction.duration = duration;
+            let metadata = self.create_metadata(
+                &visitor,
+                &span_ctx,
+                Some(transaction.timestamp),
+                span_ctx.first_entered_timestamp,
+                span_metadata,
+            );
+
+            let real_timestamp = span_ctx
+                .first_entered_timestamp
+                .unwrap_or(transaction.timestamp);
+            transaction.duration = (now - real_timestamp) as f32 / 1000.;
+            transaction.timestamp = real_timestamp;
             Batch::new(metadata, Some(json!(transaction)), None, None)
         } else {
             return;
@@ -257,12 +301,20 @@ impl ApmLayer {
                 config.root_cert_path,
             )?,
             metadata: json!(metadata),
+            timing_metadata_labels: false,
         })
+    }
+
+    pub fn with_timing_metadata_labels(&mut self) {
+        self.timing_metadata_labels = true;
     }
 
     fn create_metadata(
         &self,
         visitor: &ApmVisitor,
+        span_ctx: &SpanContext,
+        timestamp: Option<u64>,
+        first_entered_timestamp: Option<u64>,
         meta: &'static tracing::Metadata<'static>,
     ) -> Value {
         let mut metadata = self.metadata.clone();
@@ -271,6 +323,12 @@ impl ApmLayer {
             metadata["labels"] = json!(visitor.0);
             metadata["labels"]["level"] = json!(meta.level().to_string());
             metadata["labels"]["target"] = json!(meta.target().to_string());
+            if self.timing_metadata_labels {
+                metadata["labels"]["timestamp"] = json!(timestamp);
+                metadata["labels"]["first_entered_timestamp"] = json!(first_entered_timestamp);
+                metadata["labels"]["busy_ns"] = json!(span_ctx.busy.as_nanos());
+                metadata["labels"]["idle_ns"] = json!(span_ctx.idle.as_nanos());
+            }
         }
 
         metadata
