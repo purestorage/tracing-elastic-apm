@@ -7,9 +7,12 @@ use tracing::field::{Field, Visit};
 
 use crate::config::TRACE_ID_FIELD_NAME;
 
+pub trait ToVisited {
+    fn to_visited(&self) -> &FxHashMap<String, Value>;
+}
+
 #[derive(Default)]
-#[repr(transparent)]
-pub(crate) struct ApmVisitor(pub(crate) FxHashMap<String, Value>);
+pub struct ApmVisitor(pub(crate) FxHashMap<String, Value>);
 
 impl Visit for ApmVisitor {
     fn record_i64(&mut self, field: &Field, value: i64) {
@@ -33,9 +36,15 @@ impl Visit for ApmVisitor {
     }
 }
 
+impl ToVisited for ApmVisitor {
+    fn to_visited(&self) -> &FxHashMap<String, Value> {
+        &self.0
+    }
+}
+
 impl ApmVisitor {
     #[inline]
-    fn insert_value<T>(&mut self, field: &Field, value: T)
+    pub fn insert_value<T>(&mut self, field: &Field, value: T)
     where
         T: Serialize,
     {

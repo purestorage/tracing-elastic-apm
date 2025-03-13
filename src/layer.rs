@@ -4,6 +4,7 @@ use anyhow::Result as AnyResult;
 use rand::random;
 use serde_json::{json, Value};
 use tracing::{
+    field::Visit,
     span::{Attributes, Record},
     Event, Id, Level, Subscriber,
 };
@@ -13,8 +14,8 @@ use crate::{
     apm_client::Batch,
     config::Config,
     model::{Agent, Error, Log, Metadata, Service, Span, Transaction},
-    visitor::{ApmVisitor, TraceIdVisitor},
-    ApmClient,
+    visitor::TraceIdVisitor,
+    ApmClient, ToVisited,
 };
 
 #[derive(Copy, Clone)]
@@ -30,16 +31,18 @@ struct SpanContext {
 }
 
 /// Telemetry capability that publishes events and spans to Elastic APM.
-pub struct ApmLayer<T> {
+pub struct ApmLayer<T, U> {
     client: T,
     metadata: Value,
     timing_metadata_labels: bool,
+    _phantom: std::marker::PhantomData<U>,
 }
 
-impl<S, T> Layer<S> for ApmLayer<T>
+impl<S, T, U> Layer<S> for ApmLayer<T, U>
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
     T: crate::apm_client::Sender + 'static,
+    U: ToVisited + Default + Visit + Send + Sync + 'static,
 {
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let now = SystemTime::now()
@@ -51,7 +54,7 @@ where
         let span = ctx.span(id).expect("Span not found, this is a bug");
         let mut extensions = span.extensions_mut();
 
-        let mut visitor = ApmVisitor::default();
+        let mut visitor = U::default();
         attrs.record(&mut visitor);
 
         extensions.insert(visitor);
@@ -109,9 +112,7 @@ where
         let span = ctx.span(span).expect("Span not found!");
         let mut extensions = span.extensions_mut();
 
-        let visitor = extensions
-            .get_mut::<ApmVisitor>()
-            .expect("Visitor not found!");
+        let visitor = extensions.get_mut::<U>().expect("Visitor not found!");
         values.record(visitor);
     }
 
@@ -138,7 +139,7 @@ where
                 .get::<TraceContext>()
                 .expect("Trace context not found!");
 
-            let mut visitor = ApmVisitor::default();
+            let mut visitor = U::default();
             event.record(&mut visitor);
 
             let error = Error {
@@ -149,7 +150,7 @@ where
                 log: Some(Log {
                     level: Some(metadata.level().to_string()),
                     message: visitor
-                        .0
+                        .to_visited()
                         .get("message")
                         .map(|message| message.to_string())
                         .unwrap_or_default(),
@@ -203,9 +204,7 @@ where
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         let span = ctx.span(&id).expect("Span not found!");
         let mut extensions = span.extensions_mut();
-        let visitor = extensions
-            .remove::<ApmVisitor>()
-            .expect("Visitor not found!");
+        let visitor = extensions.remove::<U>().expect("Visitor not found!");
         let span_ctx = extensions
             .remove::<SpanContext>()
             .expect("Span context not found!");
@@ -253,7 +252,10 @@ where
     }
 }
 
-impl ApmLayer<ApmClient> {
+impl<U> ApmLayer<ApmClient, U>
+where
+    U: ToVisited,
+{
     pub(crate) fn new(mut config: Config, service_name: String) -> AnyResult<Self> {
         let apm_address = config.apm_address.clone();
         let authorization = config.authorization.take();
@@ -271,13 +273,15 @@ impl ApmLayer<ApmClient> {
             )?,
             metadata: json!(metadata),
             timing_metadata_labels: false,
+            _phantom: Default::default(),
         })
     }
 }
 
-impl<T> ApmLayer<T>
+impl<T, U> ApmLayer<T, U>
 where
     T: crate::apm_client::Sender,
+    U: ToVisited,
 {
     pub fn new_with(config: Config, service_name: String, sender: T) -> AnyResult<Self> {
         let metadata = Self::setup_metadata(config, service_name);
@@ -286,6 +290,7 @@ where
             client: sender,
             metadata: json!(metadata),
             timing_metadata_labels: false,
+            _phantom: Default::default(),
         })
     }
 
@@ -337,7 +342,7 @@ where
 
     fn create_metadata(
         &self,
-        visitor: &ApmVisitor,
+        visitor: &U,
         span_ctx: &SpanContext,
         timestamp: Option<u64>,
         first_entered_timestamp: Option<u64>,
@@ -345,8 +350,8 @@ where
     ) -> Value {
         let mut metadata = self.metadata.clone();
 
-        if !visitor.0.is_empty() {
-            metadata["labels"] = json!(visitor.0);
+        if !visitor.to_visited().is_empty() {
+            metadata["labels"] = json!(visitor.to_visited());
             metadata["labels"]["level"] = json!(meta.level().to_string());
             metadata["labels"]["target"] = json!(meta.target().to_string());
             if self.timing_metadata_labels {
