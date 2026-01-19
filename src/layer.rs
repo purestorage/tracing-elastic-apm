@@ -133,39 +133,40 @@ where
         };
 
         if let Some(parent_id) = &parent_id {
-            let span = ctx.span(parent_id).expect("Span not found!");
-            let extensions = span.extensions();
-            let trace_ctx = extensions
-                .get::<TraceContext>()
-                .expect("Trace context not found!");
+            if let Some(span) = ctx.span(parent_id) {
+                let extensions = span.extensions();
+                let trace_ctx = extensions
+                    .get::<TraceContext>()
+                    .expect("Trace context not found!");
 
-            let mut visitor = U::default();
-            event.record(&mut visitor);
+                let mut visitor = U::default();
+                event.record(&mut visitor);
 
-            let error = Error {
-                id: random::<u128>().to_string(),
-                trace_id: Some(trace_ctx.trace_id.to_string()),
-                parent_id: Some(parent_id.into_u64().to_string()),
-                culprit: Some(metadata.target().to_string()),
-                log: Some(Log {
-                    level: Some(metadata.level().to_string()),
-                    message: visitor
-                        .to_visited()
-                        .get("message")
-                        .map(|message| message.to_string())
-                        .unwrap_or_default(),
+                let error = Error {
+                    id: random::<u128>().to_string(),
+                    trace_id: Some(trace_ctx.trace_id.to_string()),
+                    parent_id: Some(parent_id.into_u64().to_string()),
+                    culprit: Some(metadata.target().to_string()),
+                    log: Some(Log {
+                        level: Some(metadata.level().to_string()),
+                        message: visitor
+                            .to_visited()
+                            .get("message")
+                            .map(|message| message.to_string())
+                            .unwrap_or_default(),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            };
+                };
 
-            let span_ctx = extensions
-                .get::<SpanContext>()
-                .expect("Span context not found!");
+                let span_ctx = extensions
+                    .get::<SpanContext>()
+                    .expect("Span context not found!");
 
-            let metadata = self.create_metadata(&visitor, span_ctx, None, None, metadata);
-            let batch = Batch::new(metadata, None, None, Some(json!(error)));
-            self.client.send_batch(batch);
+                let metadata = self.create_metadata(&visitor, span_ctx, None, None, metadata);
+                let batch = Batch::new(metadata, None, None, Some(json!(error)));
+                self.client.send_batch(batch);
+            }
         }
     }
 
