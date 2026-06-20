@@ -129,6 +129,8 @@ pub struct Agent {
     pub name: String,
     pub version: String,
     pub ephemeral_id: Option<String>,
+    /// Activation method of the APM agent capturing information.
+    pub activation_method: Option<String>,
 }
 
 #[cfg(feature = "valuable")]
@@ -148,6 +150,9 @@ impl valuable::Visit for Agent {
         };
         if let Some(valuable::Value::String(v)) = named_values.get_by_name("ephemeral_id") {
             self.ephemeral_id = Some(v.to_string())
+        };
+        if let Some(valuable::Value::String(v)) = named_values.get_by_name("activation_method") {
+            self.activation_method = Some(v.to_string())
         };
     }
 }
@@ -177,6 +182,8 @@ impl valuable::Visit for ServiceNode {
 #[derive(Default, Serialize, Debug)]
 pub struct Service {
     pub name: String,
+    /// Unique identifier for the running service.
+    pub id: Option<String>,
     pub version: Option<String>,
     pub environment: Option<String>,
     pub language: Option<Language>,
@@ -245,6 +252,8 @@ pub struct User {
     pub email: Option<String>,
     /// The username of the logged in user.
     pub username: Option<String>,
+    /// Domain of the logged in user.
+    pub domain: Option<String>,
 }
 
 #[derive(Default, Serialize, Debug)]
@@ -279,6 +288,13 @@ pub struct Instance {
 }
 
 #[derive(Default, Serialize, Debug)]
+pub struct CloudService {
+    /// Name of the cloud service, intended to distinguish services running on
+    /// different platforms within a provider, e.g. AWS EC2 vs Lambda.
+    pub name: Option<String>,
+}
+
+#[derive(Default, Serialize, Debug)]
 pub struct Cloud {
     pub account: Option<Account>,
     /// Cloud availability zone name. e.g. us-east-1a.
@@ -290,6 +306,20 @@ pub struct Cloud {
     pub provider: String,
     /// Cloud region name. e.g. us-east-1.
     pub region: Option<String>,
+    /// Service that is monitored on cloud.
+    pub service: Option<CloudService>,
+}
+
+#[derive(Default, Serialize, Debug)]
+pub struct Connection {
+    /// Connection type, e.g. wifi, wired, cell.
+    #[serde(rename = "type")]
+    pub connection_type: Option<String>,
+}
+
+#[derive(Default, Serialize, Debug)]
+pub struct Network {
+    pub connection: Option<Connection>,
 }
 
 #[derive(Default, Serialize, Debug)]
@@ -299,6 +329,7 @@ pub struct Metadata {
     pub system: Option<System>,
     pub user: Option<User>,
     pub cloud: Option<Cloud>,
+    pub network: Option<Network>,
     pub labels: Option<Tags>,
 }
 

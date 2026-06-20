@@ -1,11 +1,14 @@
 //! Layer configuration.
 
-use crate::model::{Cloud, Framework, Language, Process, Runtime, ServiceNode, System, User};
+use crate::model::{
+    Cloud, Framework, Language, Network, Process, Runtime, ServiceNode, System, Tags, User,
+};
 
 /// Name for the trace id field, if one needs to be supplied manually.
 pub const TRACE_ID_FIELD_NAME: &str = "trace_id";
 
 pub struct Service {
+    pub(crate) id: Option<String>,
     pub(crate) version: Option<String>,
     pub(crate) environment: Option<String>,
     pub(crate) language: Option<Language>,
@@ -16,6 +19,7 @@ pub struct Service {
 
 impl Service {
     pub fn new(
+        id: Option<String>,
         version: Option<String>,
         environment: Option<String>,
         language: Option<Language>,
@@ -24,6 +28,7 @@ impl Service {
         node: Option<ServiceNode>,
     ) -> Self {
         Service {
+            id,
             version,
             environment,
             language,
@@ -60,6 +65,8 @@ pub struct Config {
     pub(crate) system: Option<System>,
     pub(crate) user: Option<User>,
     pub(crate) cloud: Option<Cloud>,
+    pub(crate) network: Option<Network>,
+    pub(crate) labels: Option<Tags>,
     pub(crate) allow_invalid_certs: bool,
     pub(crate) root_cert_path: Option<String>,
 }
@@ -109,6 +116,16 @@ impl Config {
 
     pub fn with_cloud(mut self, cloud: Cloud) -> Self {
         self.cloud = Some(cloud);
+        self
+    }
+
+    pub fn with_network(mut self, network: Network) -> Self {
+        self.network = Some(network);
+        self
+    }
+
+    pub fn with_labels(mut self, labels: Tags) -> Self {
+        self.labels = Some(labels);
         self
     }
 }
