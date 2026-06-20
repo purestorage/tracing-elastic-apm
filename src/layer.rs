@@ -303,6 +303,10 @@ where
         Metadata {
             service: Service {
                 name: service_name,
+                id: config
+                    .service
+                    .as_mut()
+                    .and_then(|service| service.id.take()),
                 version: config
                     .service
                     .as_mut()
@@ -327,6 +331,7 @@ where
                     name: "tracing-elastic-apm".to_string(),
                     version: version::version!().to_string(),
                     ephemeral_id: None,
+                    activation_method: None,
                 },
                 node: config
                     .service
@@ -337,7 +342,8 @@ where
             system: config.system,
             user: config.user,
             cloud: config.cloud,
-            labels: None,
+            network: config.network,
+            labels: config.labels,
         }
     }
 
