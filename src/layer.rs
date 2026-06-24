@@ -12,7 +12,7 @@ use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 use crate::{
     apm_client::Batch,
-    config::Config,
+    config::{Config, TRACE_ID_FIELD_NAME},
     model::{Agent, Error, Log, Metadata, Service, Span, Transaction},
     visitor::TraceIdVisitor,
     ApmClient, ToVisited,
@@ -21,6 +21,40 @@ use crate::{
 #[derive(Copy, Clone)]
 struct TraceContext {
     pub trace_id: u128,
+}
+
+/// Builds per-event `context.tags` from the visited fields.
+///
+/// Elastic indexes `transaction.context.tags` / `span.context.tags` /
+/// `error.context.tags` as the per-document `labels.*`, so user-recorded fields
+/// belong here rather than in the stream-global `metadata.labels`.
+///
+/// - A leading `labels.` prefix is stripped so the APM key matches the ECS log
+///   nesting (e.g. `labels.pipeline_id` -> tag `pipeline_id` -> `labels.pipeline_id`
+///   in the UI, instead of the de-dotted `labels.labels_pipeline_id`).
+/// - `message` is consumed by the error log, so it is not duplicated as a tag.
+/// - `custom.*` fields carry nested, unindexable data (ECS `custom`) that is not
+///   valid as a flat label value, so they are dropped.
+///
+/// Returns `None` when nothing remains, leaving `context` untouched.
+fn visited_to_tags<U: ToVisited>(visitor: &U) -> Option<crate::model::Tags> {
+    let tags: crate::model::Tags = visitor
+        .to_visited()
+        .iter()
+        .filter(|(key, _)| {
+            let key = key.as_str();
+            key != "message" && key != TRACE_ID_FIELD_NAME && !key.starts_with("custom.")
+        })
+        .map(|(key, value)| {
+            let key = key
+                .strip_prefix("labels.")
+                .unwrap_or(key.as_str())
+                .to_string();
+            (key, value.clone())
+        })
+        .collect();
+
+    (!tags.is_empty()).then_some(tags)
 }
 
 struct SpanContext {
@@ -147,6 +181,12 @@ where
                     trace_id: Some(trace_ctx.trace_id.to_string()),
                     parent_id: Some(parent_id.into_u64().to_string()),
                     culprit: Some(metadata.target().to_string()),
+                    context: visited_to_tags(&visitor).map(|tags| {
+                        crate::model::TransactionContext {
+                            tags: Some(tags),
+                            ..Default::default()
+                        }
+                    }),
                     log: Some(Log {
                         level: Some(metadata.level().to_string()),
                         message: visitor
@@ -217,6 +257,8 @@ where
 
         let span_metadata = span.metadata();
 
+        let tags = visited_to_tags(&visitor);
+
         let batch = if let Some(mut span) = extensions.remove::<Span>() {
             let metadata = self.create_metadata(
                 &visitor,
@@ -229,6 +271,19 @@ where
             let real_timestamp = span_ctx.first_entered_timestamp.unwrap_or(span.timestamp);
             span.duration = (now - real_timestamp) as f32 / 1000.;
             span.timestamp = real_timestamp;
+
+            if let Some(tags) = tags {
+                match span.context.as_mut() {
+                    Some(context) => context.tags = Some(tags),
+                    None => {
+                        span.context = Some(crate::model::SpanContext {
+                            tags: Some(tags),
+                            ..Default::default()
+                        })
+                    }
+                }
+            }
+
             Batch::new(metadata, None, Some(json!(span)), None)
         } else if let Some(mut transaction) = extensions.remove::<Transaction>() {
             let metadata = self.create_metadata(
@@ -244,6 +299,19 @@ where
                 .unwrap_or(transaction.timestamp);
             transaction.duration = (now - real_timestamp) as f32 / 1000.;
             transaction.timestamp = real_timestamp;
+
+            if let Some(tags) = tags {
+                match transaction.context.as_mut() {
+                    Some(context) => context.tags = Some(tags),
+                    None => {
+                        transaction.context = Some(crate::model::TransactionContext {
+                            tags: Some(tags),
+                            ..Default::default()
+                        })
+                    }
+                }
+            }
+
             Batch::new(metadata, Some(json!(transaction)), None, None)
         } else {
             return;
@@ -357,8 +425,10 @@ where
     ) -> Value {
         let mut metadata = self.metadata.clone();
 
+        // Per-event user fields are routed into the event's `context.tags` (see
+        // `visited_to_tags`); `metadata.labels` keeps the static, stream-global
+        // labels (e.g. `team` / `project`) plus the diagnostic level/target/timing.
         if !visitor.to_visited().is_empty() {
-            metadata["labels"] = json!(visitor.to_visited());
             metadata["labels"]["level"] = json!(meta.level().to_string());
             metadata["labels"]["target"] = json!(meta.target().to_string());
             if self.timing_metadata_labels {
@@ -370,5 +440,71 @@ where
         }
 
         metadata
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fxhash::FxHashMap;
+
+    struct TestVisited(FxHashMap<String, Value>);
+
+    impl ToVisited for TestVisited {
+        fn to_visited(&self) -> &FxHashMap<String, Value> {
+            &self.0
+        }
+    }
+
+    fn visited(pairs: &[(&str, Value)]) -> TestVisited {
+        TestVisited(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn strips_labels_prefix_and_keeps_unprefixed_keys() {
+        let tags = visited_to_tags(&visited(&[
+            ("labels.pipeline_id", json!("abc")),
+            ("team", json!("core")),
+        ]))
+        .expect("tags should be present");
+
+        // `labels.pipeline_id` -> `pipeline_id` so the APM UI shows `labels.pipeline_id`.
+        assert_eq!(tags.get("pipeline_id"), Some(&json!("abc")));
+        assert!(!tags.contains_key("labels.pipeline_id"));
+        // Unprefixed keys pass through verbatim.
+        assert_eq!(tags.get("team"), Some(&json!("core")));
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[test]
+    fn drops_message_and_custom_fields() {
+        let tags = visited_to_tags(&visited(&[
+            ("labels.job_id", json!("j1")),
+            ("message", json!("hello")),
+            ("custom.payload", json!({ "nested": true })),
+        ]))
+        .expect("tags should be present");
+
+        assert_eq!(tags.get("job_id"), Some(&json!("j1")));
+        assert!(!tags.contains_key("message"));
+        assert!(!tags.contains_key("custom.payload"));
+        assert!(!tags.contains_key("payload"));
+        assert_eq!(tags.len(), 1);
+    }
+
+    #[test]
+    fn empty_visitor_yields_no_tags() {
+        assert!(visited_to_tags(&visited(&[])).is_none());
+    }
+
+    #[test]
+    fn only_filtered_fields_yields_no_tags() {
+        let only_filtered = visited(&[("message", json!("hi")), ("custom.x", json!("y"))]);
+        assert!(visited_to_tags(&only_filtered).is_none());
     }
 }
