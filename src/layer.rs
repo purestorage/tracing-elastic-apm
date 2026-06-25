@@ -8,19 +8,40 @@ use tracing::{
     span::{Attributes, Record},
     Event, Id, Level, Subscriber,
 };
-use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+use tracing_subscriber::{layer::Context, registry::LookupSpan, registry::Registry, Layer};
 
 use crate::{
     apm_client::Batch,
-    config::{Config, TRACE_ID_FIELD_NAME},
+    config::{Config, PARENT_ID_FIELD_NAME, TRACE_ID_FIELD_NAME},
     model::{Agent, Error, Log, Metadata, Service, Span, Transaction},
-    visitor::TraceIdVisitor,
+    visitor::RootLinkVisitor,
     ApmClient, ToVisited,
 };
 
 #[derive(Copy, Clone)]
 struct TraceContext {
     pub trace_id: u128,
+}
+
+/// Returns the `u128` trace id of the currently-active span, as assigned by the
+/// [`ApmLayer`], or `None` if there is no active span (or no registry in the
+/// dispatcher).
+///
+/// Use this to splice a *detached* future onto the in-flight trace: read the id
+/// before spawning, then record it as the [`TRACE_ID_FIELD_NAME`] field on a
+/// `parent: None` span (alongside [`PARENT_ID_FIELD_NAME`] = the current span
+/// id) so the spawned work becomes its own transaction yet stays linked.
+///
+/// Assumes the global subscriber is a `tracing_subscriber::Registry` stack
+/// (the usual `registry().with(ApmLayer)` shape); returns `None` otherwise.
+pub fn current_trace_id() -> Option<u128> {
+    let id = tracing::Span::current().id()?;
+    tracing::dispatcher::get_default(|dispatch| {
+        let registry = dispatch.downcast_ref::<Registry>()?;
+        let span = registry.span(&id)?;
+        let trace_id = span.extensions().get::<TraceContext>()?.trace_id;
+        Some(trace_id)
+    })
 }
 
 /// Builds per-event `context.tags` from the visited fields.
@@ -43,7 +64,10 @@ fn visited_to_tags<U: ToVisited>(visitor: &U) -> Option<crate::model::Tags> {
         .iter()
         .filter(|(key, _)| {
             let key = key.as_str();
-            key != "message" && key != TRACE_ID_FIELD_NAME && !key.starts_with("custom.")
+            key != "message"
+                && key != TRACE_ID_FIELD_NAME
+                && key != PARENT_ID_FIELD_NAME
+                && !key.starts_with("custom.")
         })
         .map(|(key, value)| {
             let key = key
@@ -121,17 +145,21 @@ where
             extensions.insert(new_span);
             extensions.insert(*trace_ctx);
         } else {
-            let mut visitor = TraceIdVisitor::default();
+            let mut visitor = RootLinkVisitor::default();
             attrs.record(&mut visitor);
 
             let trace_ctx = TraceContext {
-                trace_id: visitor.0.unwrap_or_else(random),
+                trace_id: visitor.trace_id.unwrap_or_else(random),
             };
 
+            // A manually supplied `parent_id` makes this a *child transaction*
+            // (own id/latency, but nested under the given span in the same
+            // trace) instead of a detached root — see `current_trace_id`.
             let new_transaction = Transaction {
                 id: id.into_u64().to_string(),
                 transaction_type: "custom".to_string(),
                 trace_id: trace_ctx.trace_id.to_string(),
+                parent_id: visitor.parent_id.map(|id| id.to_string()),
                 timestamp: now,
                 name: Some(name),
                 ..Default::default()

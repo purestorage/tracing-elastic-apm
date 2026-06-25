@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tracing::field::{Field, Visit};
 
-use crate::config::TRACE_ID_FIELD_NAME;
+use crate::config::{PARENT_ID_FIELD_NAME, TRACE_ID_FIELD_NAME};
 
 pub trait ToVisited {
     fn to_visited(&self) -> &FxHashMap<String, Value>;
@@ -52,18 +52,29 @@ impl ApmVisitor {
     }
 }
 
+/// Captures the optional linkage fields used to splice a `parent: None` span
+/// into an existing trace: [`TRACE_ID_FIELD_NAME`] (a `u128`) and
+/// [`PARENT_ID_FIELD_NAME`] (a `u64` registry span id). Only consulted for
+/// spans with no registry parent — i.e. ones that become their own
+/// transaction.
 #[derive(Default)]
-#[repr(transparent)]
-pub(crate) struct TraceIdVisitor(pub(crate) Option<u128>);
+pub(crate) struct RootLinkVisitor {
+    pub(crate) trace_id: Option<u128>,
+    pub(crate) parent_id: Option<u64>,
+}
 
-impl Visit for TraceIdVisitor {
+impl Visit for RootLinkVisitor {
     fn record_i64(&mut self, _field: &Field, _value: i64) {}
 
-    fn record_u64(&mut self, _field: &Field, _value: u64) {}
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        if field.name() == PARENT_ID_FIELD_NAME {
+            self.parent_id = Some(value);
+        }
+    }
 
     fn record_u128(&mut self, field: &Field, value: u128) {
         if field.name() == TRACE_ID_FIELD_NAME {
-            self.0 = Some(value);
+            self.trace_id = Some(value);
         }
     }
 

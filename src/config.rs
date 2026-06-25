@@ -7,6 +7,12 @@ use crate::model::{
 /// Name for the trace id field, if one needs to be supplied manually.
 pub const TRACE_ID_FIELD_NAME: &str = "trace_id";
 
+/// Name for the parent id field. Set this (a `u64` registry span id) on a
+/// `parent: None` span to make the resulting transaction a *child transaction*
+/// of an existing span — same trace, own latency, nested in the waterfall —
+/// rather than a detached trace root. Pair it with [`TRACE_ID_FIELD_NAME`].
+pub const PARENT_ID_FIELD_NAME: &str = "parent_id";
+
 pub struct Service {
     pub(crate) id: Option<String>,
     pub(crate) version: Option<String>,

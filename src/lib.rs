@@ -13,6 +13,7 @@ pub mod model;
 mod visitor;
 
 pub use apm_client::{ApmClient, Batch, Sender};
+pub use layer::current_trace_id;
 pub use visitor::{ApmVisitor, ToVisited};
 
 /// Constructs a new telemetry layer for given APM configuration.
