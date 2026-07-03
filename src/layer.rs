@@ -232,11 +232,15 @@ impl ApmLayer {
                     .service
                     .as_mut()
                     .and_then(|service| service.framework.take()),
-                agent: Agent {
-                    name: "tracing-elastic-apm".to_string(),
-                    version: version::version!().to_string(),
-                    ephemeral_id: None,
-                },
+                agent: config
+                    .service
+                    .as_mut()
+                    .and_then(|service| service.agent.take())
+                    .unwrap_or_else(|| Agent {
+                        name: "tracing-elastic-apm".to_string(),
+                        version: version::version!().to_string(),
+                        ephemeral_id: None,
+                    }),
                 node: config
                     .service
                     .as_mut()

@@ -1,6 +1,7 @@
 //! Layer configuration.
 
-use crate::model::{Cloud, Framework, Language, Process, Runtime, ServiceNode, System, User};
+use crate::model::{
+    Agent, Cloud, Framework, Language, Process, Runtime, ServiceNode, System, User};
 
 /// Name for the trace id field, if one needs to be supplied manually.
 pub const TRACE_ID_FIELD_NAME: &str = "trace_id";
@@ -11,6 +12,7 @@ pub struct Service {
     pub(crate) language: Option<Language>,
     pub(crate) runtime: Option<Runtime>,
     pub(crate) framework: Option<Framework>,
+    pub(crate) agent: Option<Agent>,
     pub(crate) node: Option<ServiceNode>,
 }
 
@@ -29,6 +31,30 @@ impl Service {
             language,
             runtime,
             framework,
+            agent: None,
+            node,
+        }
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    pub fn new_with_agent(
+        id: Option<String>,
+        version: Option<String>,
+        environment: Option<String>,
+        language: Option<Language>,
+        runtime: Option<Runtime>,
+        framework: Option<Framework>,
+        agent: Option<Agent>,
+        node: Option<ServiceNode>,
+    ) -> Self {
+        Service {
+            id,
+            version,
+            environment,
+            language,
+            runtime,
+            framework,
+            agent,
             node,
         }
     }
